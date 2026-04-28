@@ -6,6 +6,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 function App() {
   // --- STATE MANAGEMENT ---
   const [selectedPosition, setSelectedPosition] = useState(null);
+  const [manualCoords, setManualCoords] = useState({ lat: '', lng: '' });
   const [mapCenter, setMapCenter] = useState([28.6139, 77.2090]); // Default: New Delhi
   const [searchQuery, setSearchQuery] = useState('');
   const [timeframe, setTimeframe] = useState('daily');
@@ -45,32 +46,32 @@ function App() {
 
   // --- LEAFLET.JS MAP INTEGRATION (CDN METHOD) ---
   useEffect(() => {
-    // Check if Leaflet is loaded from the script tag in index.html
     if (!window.L) {
       const script = document.querySelector('script[src*="leaflet"]');
       const handleLoad = () => setIsLeafletReady(true);
       if (script) {
         script.addEventListener('load', handleLoad);
-        // Cleanup listener on component unmount
         return () => script.removeEventListener('load', handleLoad);
       }
     }
   }, []);
 
   useEffect(() => {
-    // Initialize map only when Leaflet is ready and the container exists
     if (isLeafletReady && mapContainerRef.current && !mapInstanceRef.current) {
       const map = window.L.map(mapContainerRef.current).setView(mapCenter, 12);
       window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
       }).addTo(map);
-      map.on('click', (e) => setSelectedPosition([e.latlng.lat, e.latlng.lng]));
+      map.on('click', (e) => {
+        const { lat, lng } = e.latlng;
+        setManualCoords({ lat: lat.toFixed(6), lng: lng.toFixed(6) });
+        setSelectedPosition([lat, lng]);
+      });
       mapInstanceRef.current = map;
     }
   }, [isLeafletReady, mapCenter]);
   
   useEffect(() => {
-    // Update marker when position changes
     if (mapInstanceRef.current && selectedPosition) {
       const [lat, lng] = selectedPosition;
       if (markerRef.current) {
@@ -151,7 +152,11 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (selectedPosition) handleAnalysis(selectedPosition);
+    if (selectedPosition) {
+        handleAnalysis(selectedPosition);
+        // Sync manual coord inputs when selectedPosition changes
+        setManualCoords({ lat: selectedPosition[0].toFixed(6), lng: selectedPosition[1].toFixed(6) });
+    }
   }, [selectedPosition, handleAnalysis]);
 
   const handleSearch = async (e) => {
@@ -179,6 +184,22 @@ function App() {
         setIsLoading(false);
     }
   };
+
+  const handleManualCoordAnalysis = (e) => {
+    e.preventDefault();
+    const lat = parseFloat(manualCoords.lat);
+    const lng = parseFloat(manualCoords.lng);
+
+    if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        setError("Invalid coordinates. Please enter valid latitude (-90 to 90) and longitude (-180 to 180).");
+        return;
+    }
+    const newPos = [lat, lng];
+    if(mapInstanceRef.current){
+        mapInstanceRef.current.setView(newPos, 13);
+    }
+    setSelectedPosition(newPos);
+  };
   
   const getTotalDemand = () => {
       if (!locationData) return 0;
@@ -199,16 +220,24 @@ function App() {
           <div className="space-y-6">
             <div>
               <h2 className="text-xl font-semibold mb-2">1. Select a Location</h2>
+              <p className="text-sm text-gray-400 mb-4">Search by name, enter coordinates, or click the map.</p>
+              
               <form onSubmit={handleSearch} className="flex gap-2 mb-4">
                 <input type="text" placeholder="e.g., Bengaluru, India" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-teal-500" />
                 <button type="submit" className="bg-teal-600 hover:bg-teal-700 text-white font-bold p-2 rounded">
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" /></svg>
                 </button>
               </form>
-              <div className="flex gap-2 text-sm items-center">
-                <input type="text" placeholder="Latitude" value={selectedPosition ? selectedPosition[0].toFixed(6) : ''} readOnly className="w-1/2 p-2 bg-gray-700 rounded border border-gray-600" />
-                <input type="text" placeholder="Longitude" value={selectedPosition ? selectedPosition[1].toFixed(6) : ''} readOnly className="w-1/2 p-2 bg-gray-700 rounded border border-gray-600" />
-              </div>
+
+              <form onSubmit={handleManualCoordAnalysis}>
+                <div className="flex gap-2 text-sm items-center">
+                  <input type="text" placeholder="Latitude" value={manualCoords.lat} onChange={e => setManualCoords({...manualCoords, lat: e.target.value})} className="w-1/2 p-2 bg-gray-700 rounded border border-gray-600" />
+                  <input type="text" placeholder="Longitude" value={manualCoords.lng} onChange={e => setManualCoords({...manualCoords, lng: e.target.value})} className="w-1/2 p-2 bg-gray-700 rounded border border-gray-600" />
+                </div>
+                <button type="submit" className="w-full mt-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition duration-300">
+                    Analyze Coordinates
+                </button>
+              </form>
             </div>
 
             <div className="border-t border-gray-700 pt-6">
@@ -268,3 +297,4 @@ function App() {
 }
 
 export default App;
+
