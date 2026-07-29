@@ -1,12 +1,35 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import {
-  ArrowLeft, Calendar, TrendingUp, Leaf, Building2, Zap, Battery, Sun, Wind, DollarSign
+  ArrowLeft, Calendar, TrendingUp, Leaf, Building2, Zap, Battery, Sun, Wind, DollarSign, MapPin, Maximize
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, ResponsiveContainer,
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend
 } from 'recharts';
+import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+import L from 'leaflet';
+
+// Fix leaflet icon issue in react
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+    iconRetinaUrl: require('leaflet/dist/images/marker-icon-2x.png'),
+    iconUrl: require('leaflet/dist/images/marker-icon.png'),
+    shadowUrl: require('leaflet/dist/images/marker-shadow.png')
+});
+
+function LocationMarker({ position, setPosition }) {
+  useMapEvents({
+    click(e) {
+      setPosition(e.latlng);
+    },
+  });
+  return position === null ? null : (
+    <Marker position={position}></Marker>
+  );
+}
+
 
 function App() {
   const [loading, setLoading] = useState(false);
@@ -17,8 +40,18 @@ function App() {
     lat: 12.3829,
     lon: 77.3947,
     load: 1000,
-    buildings: 15
+    buildings: 15,
+    area_sqm: 5000
   });
+
+
+  const handleMapClick = (latlng) => {
+    setFormData({
+      ...formData,
+      lat: parseFloat(latlng.lat.toFixed(4)),
+      lon: parseFloat(latlng.lng.toFixed(4))
+    });
+  };
 
   const handleChange = (e) => {
     setFormData({
@@ -41,9 +74,7 @@ function App() {
     }
   };
 
-  React.useEffect(() => {
-    handleRunAnalysis();
-  }, []); // Run once on mount
+  // Removed auto-run on mount to require manual trigger
 
   const formatMoney = (val) => {
     if (!val) return '$0';
@@ -84,13 +115,24 @@ function App() {
               <h2 className="text-base font-bold text-slate-800">Parameters</h2>
 
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Latitude</label>
-                <input type="number" step="any" name="lat" value={formData.lat} onChange={handleChange} className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-slate-800 text-sm focus:outline-none focus:border-blue-500" required />
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 flex items-center gap-1"><MapPin className="w-3 h-3"/> Pinpoint Location on Map</label>
+                <div className="h-48 rounded-lg overflow-hidden border border-slate-200 z-0">
+                  <MapContainer center={[formData.lat, formData.lon]} zoom={2} scrollWheelZoom={true} style={{ height: '100%', width: '100%', zIndex: 0 }}>
+                    <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                    <LocationMarker position={{lat: formData.lat, lng: formData.lon}} setPosition={handleMapClick} />
+                  </MapContainer>
+                </div>
+                <div className="text-[10px] text-slate-400 mt-1 flex justify-between">
+                    <span>Lat: {formData.lat}</span>
+                    <span>Lon: {formData.lon}</span>
+                </div>
               </div>
+
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Longitude</label>
-                <input type="number" step="any" name="lon" value={formData.lon} onChange={handleChange} className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-slate-800 text-sm focus:outline-none focus:border-blue-500" required />
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 flex items-center gap-1"><Maximize className="w-3 h-3"/> Available Area (sq m)</label>
+                <input type="number" step="any" name="area_sqm" value={formData.area_sqm} onChange={handleChange} className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-slate-800 text-sm focus:outline-none focus:border-blue-500" required />
               </div>
+
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Daily Load (kWh)</label>
                 <input type="number" step="any" name="load" value={formData.load} onChange={handleChange} className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-slate-800 text-sm focus:outline-none focus:border-blue-500" required />

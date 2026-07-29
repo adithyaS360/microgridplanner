@@ -95,16 +95,16 @@ def fetch_wind_speed(lat: float, lon: float) -> float:
         print("Open-Meteo error:", e)
     return 5.08  # Default from image
 
-def predict_demand(buildings: int, sq_meters: float, lat: float) -> float:
+def predict_demand(buildings: int, area_sqm: float, lat: float) -> float:
     # Dummy ML model for demand prediction
     X_train = np.array([[10, 1000, 10], [20, 2000, 20], [5, 500, 5], [15, 1500, 15]])
     y_train = np.array([50, 100, 25, 75])
     model = LinearRegression()
     model.fit(X_train, y_train)
-    X_test = np.array([[buildings, sq_meters, lat]])
+    X_test = np.array([[buildings, area_sqm, lat]])
     return max(10, float(model.predict(X_test)[0]))
 
-def size_system(lat: float, lon: float, buildings: int, load_kwh_day: float,
+def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kwh_day: float,
                 fuel_cost: float, solar_fraction: float, autonomy: float, load_factor: float):
     nasa = fetch_nasa_ghi(lat, lon)
     ghi_vals = nasa["values"]
@@ -113,7 +113,7 @@ def size_system(lat: float, lon: float, buildings: int, load_kwh_day: float,
     wind_speed = fetch_wind_speed(lat, lon)
 
     # Use ML model to adjust demand if load_kwh_day is small or just as an example
-    predicted_load = predict_demand(buildings, buildings * 150, lat)
+    predicted_load = predict_demand(buildings, area_sqm, lat)
     # Average them or use the predicted if not provided
     load = max(load_kwh_day, predicted_load)
 
@@ -122,9 +122,24 @@ def size_system(lat: float, lon: float, buildings: int, load_kwh_day: float,
     wind_pct = 0.037
     biomass_pct = 0.013
 
-    # PV sizing
+    # PV sizing with Area Constraint
     e_pv_per_kw_day = (ghi_median if ghi_median > 0 else 5.42) * PR
-    pv_kw = (load * solar_pct) / e_pv_per_kw_day
+    desired_pv_kw = (load * solar_pct) / e_pv_per_kw_day
+
+    # Assume 1 kW of PV requires about 5 sq meters of space
+    max_pv_by_area = area_sqm / 5.0
+
+    pv_kw = min(desired_pv_kw, max_pv_by_area)
+
+    # If PV was constrained by area, the solar percentage served drops,
+    # meaning the rest must be picked up by wind/biomass or the generator.
+    if pv_kw < desired_pv_kw:
+        solar_pct = (pv_kw * e_pv_per_kw_day) / load
+        # Shift the missing percentage to wind/biomass if possible (simplified fallback)
+        shortfall = 0.95 - solar_pct
+        wind_pct += shortfall * 0.7
+        biomass_pct += shortfall * 0.3
+
 
     # Wind sizing
     # very rough wind capacity factor estimation
@@ -200,14 +215,15 @@ def size_system(lat: float, lon: float, buildings: int, load_kwh_day: float,
 
         "buildings": buildings,
         "system_capacity": rnd(sys_capacity, 1),
+        "area_sqm": rnd(area_sqm, 0),
         "batt_kwh": rnd(batt_kwh, 0),
         "solar_irradiance": rnd(ghi_median, 2),
         "wind_speed": rnd(wind_speed, 2),
 
         "energy_mix": {
-            "Solar": 95,
-            "Wind": 3.7,
-            "Biomass": 1.2
+            "Solar": rnd(solar_pct * 100, 1),
+            "Wind": rnd(wind_pct * 100, 1),
+            "Biomass": rnd(biomass_pct * 100, 1)
         },
         "annual_generation": rnd(annual_load * 1.05, 0),
         "reliability": 100,
@@ -225,12 +241,13 @@ def plan():
         lon = float(data.get("lon", 77.3947))
         load = float(data.get("load", 1000))
         buildings = int(data.get("buildings", 15))
+        area_sqm = float(data.get("area_sqm", 5000))
         fuel_cost = float(data.get("fuel_cost", FUEL_COST_DEFAULT))
         solar_fraction = float(data.get("renewables_target", 0.95))
         autonomy = float(data.get("autonomy_days", 1.0))
         load_factor = float(data.get("load_factor", 0.6))
 
-        res = size_system(lat, lon, buildings, load, fuel_cost, solar_fraction, autonomy, load_factor)
+        res = size_system(lat, lon, buildings, area_sqm, load, fuel_cost, solar_fraction, autonomy, load_factor)
         return jsonify(res)
     except Exception as e:
         return jsonify({"error": str(e)}), 400
