@@ -6,9 +6,11 @@
 import math
 import statistics
 import requests
-from flask import Flask, request, render_template_string
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app)
 
 # ----------------------------
 # Configurable defaults
@@ -62,173 +64,6 @@ NASA_POWER_URL = (
     "?parameters=ALLSKY_SFC_SW_DWN&community=RE&longitude={lon}&latitude={lat}&format=JSON"
 )
 
-HTML_TEMPLATE = """
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Microgrid Planner MVP</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 20px; color: #222; }
-    .card { max-width: 900px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 8px; }
-    h1 { margin-top: 0; font-size: 1.4rem; }
-    form { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 12px; align-items: end; }
-    label { font-size: 0.9rem; color: #333; }
-    input, select { width: 100%; padding: 8px; font-size: 1rem; border: 1px solid #ccc; border-radius: 6px; }
-    .full { grid-column: 1 / -1; }
-    button { padding: 10px 14px; border: none; background: #1b74e4; color: white; border-radius: 6px; cursor: pointer; }
-    button:hover { background: #155fc0; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
-    .box { border: 1px solid #eee; border-radius: 8px; padding: 12px; background: #fafafa; }
-    .muted { color: #666; font-size: 0.9rem; }
-    .warn { background: #fff7e6; border-color: #ffe7ba; }
-    pre { background: #0b1020; color: #dbe2ff; padding: 12px; border-radius: 8px; overflow: auto; }
-    .small { font-size: 0.9rem; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Microgrid Planner MVP</h1>
-    <form method="post" action="/">
-      <div>
-        <label>Latitude</label>
-        <input name="lat" type="number" step="any" required value="{{ lat if lat is not none else '' }}">
-      </div>
-      <div>
-        <label>Longitude</label>
-        <input name="lon" type="number" step="any" required value="{{ lon if lon is not none else '' }}">
-      </div>
-      <div>
-        <label>Daily load (kWh/day)</label>
-        <input name="load" type="number" step="any" min="0.1" required value="{{ load if load is not none else '' }}">
-      </div>
-      <div>
-        <label>Fuel cost (USD/L)</label>
-        <input name="fuel_cost" type="number" step="any" min="0" value="{{ fuel_cost }}">
-      </div>
-      <div>
-        <label>Renewables target</label>
-        <select name="renewables_target">
-          {% for label, val in renewables_targets.items() %}
-            <option value="{{ val }}" {% if r_target == val %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label>Autonomy</label>
-        <select name="autonomy_days">
-          {% for label, val in autonomy_options.items() %}
-            <option value="{{ val }}" {% if autonomy == val %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="full">
-        <label>Load type</label>
-        <select name="load_factor">
-          {% for label, lf in load_types.items() %}
-            <option value="{{ lf }}" {% if load_factor == lf %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="full"><button type="submit">Plan Microgrid</button></div>
-    </form>
-
-    {% if error %}
-      <p style="color:#b00020; margin-top:14px;">{{ error }}</p>
-    {% endif %}
-
-    {% if result %}
-      <hr>
-      <h2>Recommended System</h2>
-      <div class="grid">
-        <div class="box">
-          <strong>PV capacity</strong><br>
-          {{ result.pv_kw }} kW (≈ {{ result.panel_count }} × {{ result.panel_w }} W panels)
-        </div>
-        <div class="box">
-          <strong>Battery storage</strong><br>
-          {{ result.batt_kwh }} kWh (≈ {{ result.battery_count }} × {{ result.battery_unit_kwh }} kWh)
-        </div>
-        <div class="box">
-          <strong>Inverter</strong><br>
-          {{ result.inverter_kw }} kW
-        </div>
-        <div class="box">
-          <strong>Generator</strong><br>
-          {{ result.gen_kw }} kW nameplate
-        </div>
-      </div>
-
-      <h3>Costs (rough order)</h3>
-      <div class="grid">
-        <div class="box">
-          <strong>CAPEX (total)</strong><br>
-          ${{ "{:,.0f}".format(result.capex_total) }}
-          <div class="muted small">
-            PV ${{ "{:,.0f}".format(result.capex_pv) }}, Batt ${{ "{:,.0f}".format(result.capex_batt) }}, Inv ${{ "{:,.0f}".format(result.capex_inv) }}, Gen ${{ "{:,.0f}".format(result.capex_gen) }}
-          </div>
-        </div>
-        <div class="box">
-          <strong>Annual O&M</strong><br>
-          ${{ "{:,.0f}".format(result.annual_om) }}/yr
-        </div>
-        <div class="box">
-          <strong>Annual fuel</strong><br>
-          ${{ "{:,.0f}".format(result.annual_fuel_cost) }} ({{ "{:,.0f}".format(result.annual_fuel_liters) }} L/yr)
-        </div>
-        <div class="box">
-          <strong>Estimated LCOE</strong><br>
-          ${{ "{:.2f}".format(result.lcoe) }}/kWh
-        </div>
-      </div>
-
-      <h3>Energy balance (annual)</h3>
-      <div class="grid">
-        <div class="box">
-          <strong>Load</strong><br>
-          {{ "{:,.0f}".format(result.annual_load) }} kWh/yr
-        </div>
-        <div class="box">
-          <strong>Potential PV</strong><br>
-          {{ "{:,.0f}".format(result.annual_pv_energy) }} kWh/yr
-        </div>
-        <div class="box">
-          <strong>Served by PV/Battery</strong><br>
-          {{ "{:,.0f}".format(result.served_by_pv_batt) }} kWh/yr
-        </div>
-        <div class="box">
-          <strong>Served by Generator</strong><br>
-          {{ "{:,.0f}".format(result.served_by_gen) }} kWh/yr
-        </div>
-      </div>
-
-      {% if result.warnings %}
-        <h3>Notes</h3>
-        <div class="box warn">
-          <ul>
-            {% for w in result.warnings %}
-              <li>{{ w }}</li>
-            {% endfor %}
-          </ul>
-        </div>
-      {% endif %}
-
-      <h3>Inputs & Assumptions</h3>
-      <div class="box small">
-        Lat {{ lat }}, Lon {{ lon }}, Load {{ load }} kWh/day, Fuel ${{ fuel_cost }}/L,<br>
-        Worst-month GHI {{ "{:.2f}".format(result.ghi_worst) }} kWh/m²/day, PR {{ PR }}, Target {{ int(r_target*100) }}%, Autonomy {{ autonomy }} days, LF {{ load_factor }}.
-      </div>
-
-      <details>
-        <summary>Show raw JSON result</summary>
-        <pre>{{ result|tojson(indent=2) }}</pre>
-      </details>
-    {% endif %}
-  </div>
-</body>
-</html>
-"""
 
 def crf(rate: float, n_years: int) -> float:
     """Capital recovery factor."""
@@ -387,51 +222,35 @@ def parse_float(name: str, value: str, min_val=None, max_val=None):
         raise ValueError(f"{name} must be ≤ {max_val}")
     return v
 
-@app.route("/", methods=["GET", "POST"])
-def index():
-    ctx = {
-        "lat": None,
-        "lon": None,
-        "load": None,
-        "fuel_cost": FUEL_COST_DEFAULT,
-        "r_target": list(RENEWABLES_TARGETS.values())[1],  # default 80%
-        "autonomy": list(AUTONOMY_OPTIONS.values())[1],    # default 1 day
-        "load_factor": list(LOAD_TYPES.values())[0],       # default village 0.6
-        "renewables_targets": RENEWABLES_TARGETS,
-        "autonomy_options": AUTONOMY_OPTIONS,
-        "load_types": LOAD_TYPES,
-        "PR": PR,
-        "result": None,
-        "error": None,
-    }
+@app.route("/api/plan", methods=["POST"])
+def plan():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Missing JSON request body"}), 400
 
-    if request.method == "POST":
-        try:
-            lat = parse_float("Latitude", request.form.get("lat",""), -90, 90)
-            lon = parse_float("Longitude", request.form.get("lon",""), -180, 180)
-            load = parse_float("Daily load (kWh/day)", request.form.get("load",""), 0.1, None)
-            fuel_cost = request.form.get("fuel_cost", "").strip()
-            fuel_cost = float(fuel_cost) if fuel_cost != "" else FUEL_COST_DEFAULT
-            r_target = float(request.form.get("renewables_target", list(RENEWABLES_TARGETS.values())[1]))
-            autonomy = float(request.form.get("autonomy_days", list(AUTONOMY_OPTIONS.values())[1]))
-            load_factor = float(request.form.get("load_factor", list(LOAD_TYPES.values())[0]))
+        lat = parse_float("Latitude", data.get("lat", ""), -90, 90)
+        lon = parse_float("Longitude", data.get("lon", ""), -180, 180)
+        load = parse_float("Daily load (kWh/day)", data.get("load", ""), 0.1, None)
 
-            ctx.update({"lat": lat, "lon": lon, "load": load, "fuel_cost": fuel_cost,
-                        "r_target": r_target, "autonomy": autonomy, "load_factor": load_factor})
+        fuel_cost = data.get("fuel_cost", FUEL_COST_DEFAULT)
+        fuel_cost = float(fuel_cost) if fuel_cost != "" else FUEL_COST_DEFAULT
 
-            result = size_system(
-                lat=lat, lon=lon,
-                load_kwh_day=load,
-                fuel_cost_usd_per_l=fuel_cost,
-                solar_fraction=r_target,
-                autonomy_days=autonomy,
-                load_factor=load_factor
-            )
-            ctx["result"] = result
-        except Exception as e:
-            ctx["error"] = str(e)
+        r_target = float(data.get("renewables_target", list(RENEWABLES_TARGETS.values())[1]))
+        autonomy = float(data.get("autonomy_days", list(AUTONOMY_OPTIONS.values())[1]))
+        load_factor = float(data.get("load_factor", list(LOAD_TYPES.values())[0]))
 
-    return render_template_string(HTML_TEMPLATE, **ctx)
+        result = size_system(
+            lat=lat, lon=lon,
+            load_kwh_day=load,
+            fuel_cost_usd_per_l=fuel_cost,
+            solar_fraction=r_target,
+            autonomy_days=autonomy,
+            load_factor=load_factor
+        )
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 if __name__ == "__main__":
     # For local dev: python app.py, then open http://127.0.0.1:5000

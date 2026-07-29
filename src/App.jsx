@@ -1,300 +1,214 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState } from 'react';
+import axios from 'axios';
+import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { Activity, Battery, Zap, DollarSign } from 'lucide-react';
 
-// NOTE: We do not import 'leaflet' or 'leaflet.css' here because they are
-// already loaded globally from the public/index.html file.
+const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444'];
 
 function App() {
-  // --- STATE MANAGEMENT ---
-  const [selectedPosition, setSelectedPosition] = useState(null);
-  const [manualCoords, setManualCoords] = useState({ lat: '', lng: '' });
-  const [mapCenter, setMapCenter] = useState([28.6139, 77.2090]); // Default: New Delhi
-  const [searchQuery, setSearchQuery] = useState('');
-  const [timeframe, setTimeframe] = useState('daily');
-  const [locationData, setLocationData] = useState(null);
-  const [analysisResult, setAnalysisResult] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [formData, setFormData] = useState({
+    lat: 10,
+    lon: 10,
+    load: 100,
+    fuel_cost: 1.2,
+    renewables_target: 0.8,
+    autonomy_days: 1.0,
+    load_factor: 0.6
+  });
+  const [result, setResult] = useState(null);
   const [error, setError] = useState('');
-  const [warning, setWarning] = useState('');
-  const [isLeafletReady, setIsLeafletReady] = useState(!!window.L);
+  const [loading, setLoading] = useState(false);
 
-  const mapContainerRef = useRef(null);
-  const mapInstanceRef = useRef(null);
-  const markerRef = useRef(null);
-
-  // --- Reusable UI Components ---
-  const Spinner = () => (
-    <div className="flex justify-center items-center p-8">
-      <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-teal-400"></div>
-    </div>
-  );
-
-  const EnergyIcon = ({ type, className = "h-12 w-12" }) => {
-    const icons = {
-      SOLAR: ( <svg xmlns="http://www.w3.org/2000/svg" className={`${className} text-yellow-400`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" /></svg> ),
-      WIND: ( <svg xmlns="http://www.w3.org/2000/svg" className={`${className} text-gray-400`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487zm0 0L19.5 7.125" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 12c0-3.866 3.134-7 7-7" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12c0 3.866 3.134 7 7 7" /></svg> ),
-      HYBRID: ( <svg xmlns="http://www.w3.org/2000/svg" className={`${className} text-green-500`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10s5 2 5 2l2-5s-2 1-4 2-3 4-3 4-1 2-1 4a8 8 0 0011.314 0z" /></svg> ),
-    };
-    return icons[type] || null;
+  const handleChange = (e) => {
+    setFormData({
+      ...formData,
+      [e.target.name]: parseFloat(e.target.value) || e.target.value
+    });
   };
 
-  // --- Country-specific Electricity Consumption Data ---
-  const countryConsumptionData = {
-      US: 29.3, CA: 30.5, DE: 9.5, GB: 10.3, FR: 12.0, AU: 15.9,
-      IN: 3.3, CN: 8.0, JP: 13.0, BR: 6.8, ZA: 11.5, RU: 7.0,
-      DEFAULT: 9.6, // Global average as a fallback
-  };
-
-  // --- LEAFLET.JS MAP INTEGRATION (CDN METHOD) ---
-  useEffect(() => {
-    if (!window.L) {
-      const script = document.querySelector('script[src*="leaflet"]');
-      const handleLoad = () => setIsLeafletReady(true);
-      if (script) {
-        script.addEventListener('load', handleLoad);
-        return () => script.removeEventListener('load', handleLoad);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    if (isLeafletReady && mapContainerRef.current && !mapInstanceRef.current) {
-      const map = window.L.map(mapContainerRef.current).setView(mapCenter, 12);
-      window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-      }).addTo(map);
-      map.on('click', (e) => {
-        const { lat, lng } = e.latlng;
-        setManualCoords({ lat: lat.toFixed(6), lng: lng.toFixed(6) });
-        setSelectedPosition([lat, lng]);
-      });
-      mapInstanceRef.current = map;
-    }
-  }, [isLeafletReady, mapCenter]);
-  
-  useEffect(() => {
-    if (mapInstanceRef.current && selectedPosition) {
-      const [lat, lng] = selectedPosition;
-      if (markerRef.current) {
-        markerRef.current.setLatLng([lat, lng]);
-      } else {
-        markerRef.current = window.L.marker([lat, lng]).addTo(mapInstanceRef.current);
-      }
-      mapInstanceRef.current.panTo([lat, lng]);
-    }
-  }, [selectedPosition]);
-
-  // --- REAL-WORLD DATA INTEGRATION ---
-  const fetchRealDataForLocation = async (lat, lng) => {
-    const weatherApiUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=shortwave_radiation_sum,wind_speed_10m_max&wind_speed_unit=mph&timezone=auto&past_days=30`;
-    const overpassApiUrl = `https://overpass-api.de/api/interpreter?data=[out:json];way(around:500,${lat},${lng})["building"];out count;`;
-    const nominatimUrl = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`;
-    
-    const [weatherResponse, buildingResponse, geocodeResponse] = await Promise.allSettled([
-        fetch(weatherApiUrl), fetch(overpassApiUrl), fetch(nominatimUrl)
-    ]);
-
-    if (weatherResponse.status !== 'fulfilled' || !weatherResponse.value.ok) throw new Error("Could not fetch climate data.");
-    const weatherData = await weatherResponse.value.json();
-    const getAverage = (arr) => (arr?.length > 0) ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
-    const peakSunHours = (getAverage(weatherData.daily.shortwave_radiation_sum) / 3.6).toFixed(2);
-    const avgWindSpeedMph = getAverage(weatherData.daily.wind_speed_10m_max).toFixed(2);
-
-    let fetchedHouses = 50;
-    if (buildingResponse.status === 'fulfilled' && buildingResponse.value.ok) {
-        const buildingData = await buildingResponse.value.json();
-        if (buildingData.elements[0]?.tags?.total) {
-            fetchedHouses = Number(buildingData.elements[0].tags.total);
-            setWarning('');
-        }
-    } else {
-        setWarning("Could not fetch building count. Using default estimate.");
-    }
-
-    let countryCode = 'DEFAULT';
-    if (geocodeResponse.status === 'fulfilled' && geocodeResponse.value.ok) {
-        const geocodeData = await geocodeResponse.value.json();
-        if (geocodeData.address?.country_code) {
-             countryCode = geocodeData.address.country_code.toUpperCase();
-        }
-    } else {
-        setWarning(prev => prev + " Could not detect country. Using global average for energy use.");
-    }
-    const estimatedUsage = countryConsumptionData[countryCode] || countryConsumptionData.DEFAULT;
-    
-    return { numberOfHouses: fetchedHouses, avgDailyUsageKWh: estimatedUsage, peakSunHours, avgWindSpeedMph, countryCode };
-  };
-
-  const analyzeMicrogridFeasibility = (data) => {
-    const { peakSunHours, avgWindSpeedMph } = data;
-    if (avgWindSpeedMph > 12) return { recommendation: "Wind Turbine", description: "Consistently strong winds make this location ideal for a wind turbine microgrid.", type: "WIND" };
-    if (peakSunHours > 5.5) return { recommendation: "Solar Panels", description: "Excellent solar exposure suggests a solar panel array would be highly efficient.", type: "SOLAR" };
-    return { recommendation: "Hybrid System (Solar + Storage)", description: "Moderate conditions suggest a hybrid approach with battery storage is the most resilient option.", type: "HYBRID" };
-  };
-  
-  const handleAnalysis = useCallback(async (position) => {
-    if (!position) return;
-    const [lat, lng] = position;
-    setIsLoading(true);
-    setError('');
-    setWarning('');
-    setLocationData(null);
-    setAnalysisResult(null);
-    try {
-      const data = await fetchRealDataForLocation(lat, lng);
-      setLocationData(data);
-      const result = analyzeMicrogridFeasibility(data);
-      setAnalysisResult(result);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (selectedPosition) {
-        handleAnalysis(selectedPosition);
-        // Sync manual coord inputs when selectedPosition changes
-        setManualCoords({ lat: selectedPosition[0].toFixed(6), lng: selectedPosition[1].toFixed(6) });
-    }
-  }, [selectedPosition, handleAnalysis]);
-
-  const handleSearch = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!searchQuery) return;
+    setLoading(true);
     setError('');
-    setIsLoading(true);
+    setResult(null);
     try {
-        const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}`);
-        if (!response.ok) throw new Error("Search service failed.");
-        const data = await response.json();
-        if (data && data.length > 0) {
-            const { lat, lon } = data[0];
-            const newPos = [parseFloat(lat), parseFloat(lon)];
-            if(mapInstanceRef.current){
-                mapInstanceRef.current.setView(newPos, 13);
-            }
-            setSelectedPosition(newPos);
-        } else {
-            setError("Location not found.");
-        }
+      const res = await axios.post('http://127.0.0.1:5000/api/plan', formData);
+      setResult(res.data);
     } catch (err) {
-        setError(err.message);
+      setError(err.response?.data?.error || err.message);
     } finally {
-        setIsLoading(false);
+      setLoading(false);
     }
   };
 
-  const handleManualCoordAnalysis = (e) => {
-    e.preventDefault();
-    const lat = parseFloat(manualCoords.lat);
-    const lng = parseFloat(manualCoords.lng);
+  const costData = result ? [
+    { name: 'PV', value: result.capex_pv },
+    { name: 'Battery', value: result.capex_batt },
+    { name: 'Inverter', value: result.capex_inv },
+    { name: 'Generator', value: result.capex_gen }
+  ] : [];
 
-    if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-        setError("Invalid coordinates. Please enter valid latitude (-90 to 90) and longitude (-180 to 180).");
-        return;
-    }
-    const newPos = [lat, lng];
-    if(mapInstanceRef.current){
-        mapInstanceRef.current.setView(newPos, 13);
-    }
-    setSelectedPosition(newPos);
-  };
-  
-  const getTotalDemand = () => {
-      if (!locationData) return 0;
-      const dailyDemand = locationData.numberOfHouses * locationData.avgDailyUsageKWh;
-      if (timeframe === 'weekly') return (dailyDemand * 7).toLocaleString('en-US', {maximumFractionDigits: 0});
-      if (timeframe === 'monthly') return (dailyDemand * 30).toLocaleString('en-US', {maximumFractionDigits: 0});
-      return dailyDemand.toLocaleString('en-US', {maximumFractionDigits: 0});
-  };
+  const energyData = result ? [
+    { name: 'PV/Batt', kWh: result.served_by_pv_batt },
+    { name: 'Generator', kWh: result.served_by_gen }
+  ] : [];
 
   return (
-    <div className="bg-gray-900 text-white min-h-screen font-sans flex flex-col">
-      <header className="bg-gray-800 p-4 shadow-lg">
-        <h1 className="text-3xl font-bold text-center text-teal-400">Microgrid Feasibility Planner</h1>
+    <div className="min-h-screen bg-gray-900 text-gray-100 p-6">
+      <header className="max-w-6xl mx-auto mb-8">
+        <h1 className="text-3xl font-bold text-teal-400 flex items-center gap-2">
+          <Activity className="w-8 h-8" />
+          Microgrid Feasibility Dashboard
+        </h1>
+        <p className="text-gray-400 mt-2">Plan and estimate the specifications and costs of a localized microgrid setup.</p>
       </header>
-      
-      <main className="flex-grow flex flex-col md:flex-row" style={{ height: "calc(100vh - 72px)" }}>
-        <div className="w-full md:w-1/3 p-6 bg-gray-800 overflow-y-auto">
-          <div className="space-y-6">
+
+      <main className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
+
+        {/* Form Section */}
+        <section className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700 h-fit">
+          <h2 className="text-xl font-semibold mb-4 text-gray-200 border-b border-gray-700 pb-2">Location & Parameters</h2>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Latitude</label>
+                <input type="number" step="any" name="lat" value={formData.lat} onChange={handleChange} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-teal-500" required />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Longitude</label>
+                <input type="number" step="any" name="lon" value={formData.lon} onChange={handleChange} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-teal-500" required />
+              </div>
+            </div>
+
             <div>
-              <h2 className="text-xl font-semibold mb-2">1. Select a Location</h2>
-              <p className="text-sm text-gray-400 mb-4">Search by name, enter coordinates, or click the map.</p>
-              
-              <form onSubmit={handleSearch} className="flex gap-2 mb-4">
-                <input type="text" placeholder="e.g., Bengaluru, India" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-teal-500" />
-                <button type="submit" className="bg-teal-600 hover:bg-teal-700 text-white font-bold p-2 rounded">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" /></svg>
-                </button>
-              </form>
-
-              <form onSubmit={handleManualCoordAnalysis}>
-                <div className="flex gap-2 text-sm items-center">
-                  <input type="text" placeholder="Latitude" value={manualCoords.lat} onChange={e => setManualCoords({...manualCoords, lat: e.target.value})} className="w-1/2 p-2 bg-gray-700 rounded border border-gray-600" />
-                  <input type="text" placeholder="Longitude" value={manualCoords.lng} onChange={e => setManualCoords({...manualCoords, lng: e.target.value})} className="w-1/2 p-2 bg-gray-700 rounded border border-gray-600" />
-                </div>
-                <button type="submit" className="w-full mt-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition duration-300">
-                    Analyze Coordinates
-                </button>
-              </form>
+              <label className="block text-sm text-gray-400 mb-1">Daily Load (kWh/day)</label>
+              <input type="number" step="any" name="load" value={formData.load} onChange={handleChange} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-teal-500" required />
             </div>
 
-            <div className="border-t border-gray-700 pt-6">
-              <h2 className="text-xl font-semibold mb-2">2. Analysis Results</h2>
-              {isLoading && <Spinner />}
-              {error && <p className="text-red-400 bg-red-900/50 p-3 rounded">{error}</p>}
-              {warning && !error && <p className="text-yellow-400 bg-yellow-900/50 p-3 rounded">{warning}</p>}
-              
-              {analysisResult && locationData && !isLoading && (
-                <div className="bg-gray-700 p-4 rounded-lg shadow-inner space-y-4">
-                    <div className="flex items-center gap-4">
-                        <EnergyIcon type={analysisResult.type} />
-                        <div>
-                            <p className="text-gray-400 text-sm">Recommendation</p>
-                            <p className="text-2xl font-bold text-teal-400">{analysisResult.recommendation}</p>
-                        </div>
-                    </div>
-                  <p className="text-gray-300">{analysisResult.description}</p>
-                  
-                  <div className="border-t border-gray-600 pt-4">
-                    <h3 className="font-semibold mb-2 text-gray-300">Data Used for Analysis:</h3>
-                    <ul className="text-sm space-y-2 text-gray-400">
-                      <li><span className="font-medium text-gray-200">Est. Houses (500m Radius):</span> {locationData.numberOfHouses}</li>
-                      <li><span className="font-medium text-gray-200">Avg. Daily Use (Est. for {locationData.countryCode}):</span> {locationData.avgDailyUsageKWh} kWh</li>
-                      <li>
-                        <div className="flex justify-between items-center">
-                          <span className="font-medium text-gray-200">Total Estimated Demand:</span>
-                          <select value={timeframe} onChange={e => setTimeframe(e.target.value)} className="bg-gray-600 text-xs rounded p-1">
-                              <option value="daily">Daily</option>
-                              <option value="weekly">Weekly</option>
-                              <option value="monthly">Monthly</option>
-                          </select>
-                        </div>
-                        <p className="text-right text-lg font-bold text-white">{getTotalDemand()} kWh</p>
-                      </li>
-                      <li><span className="font-medium text-gray-200">Avg. Peak Sun Hours (30 days):</span> {locationData.peakSunHours} / day</li>
-                      <li><span className="font-medium text-gray-200">Avg. Wind Speed (30 days):</span> {locationData.avgWindSpeedMph} mph</li>
-                    </ul>
-                  </div>
-                </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1">Fuel Cost (USD/L)</label>
+              <input type="number" step="any" name="fuel_cost" value={formData.fuel_cost} onChange={handleChange} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-teal-500" required />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Renewables Target</label>
+                <select name="renewables_target" value={formData.renewables_target} onChange={handleChange} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-teal-500">
+                  <option value={0.6}>60%</option>
+                  <option value={0.8}>80%</option>
+                  <option value={0.95}>95%</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Autonomy (Days)</label>
+                <select name="autonomy_days" value={formData.autonomy_days} onChange={handleChange} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-teal-500">
+                  <option value={0.5}>0.5 Days</option>
+                  <option value={1.0}>1 Day</option>
+                  <option value={2.0}>2 Days</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm text-gray-400 mb-1">Load Type (Factor)</label>
+              <select name="load_factor" value={formData.load_factor} onChange={handleChange} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-teal-500">
+                <option value={0.6}>Village (0.6)</option>
+                <option value={0.5}>Mine (0.5)</option>
+                <option value={0.7}>Clinic (0.7)</option>
+              </select>
+            </div>
+
+            <button type="submit" disabled={loading} className="w-full mt-4 bg-teal-600 hover:bg-teal-700 text-white font-bold py-3 px-4 rounded transition duration-200 flex justify-center items-center gap-2">
+              {loading ? 'Calculating...' : (
+                <>
+                  <Zap className="w-5 h-5" /> Calculate Microgrid
+                </>
               )}
+            </button>
+
+            {error && <div className="mt-4 p-3 bg-red-900/50 border border-red-500 text-red-200 rounded">{error}</div>}
+          </form>
+        </section>
+
+        {/* Results Section */}
+        {result && (
+          <section className="lg:col-span-2 space-y-6">
+
+            {/* KPI Cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 flex flex-col justify-center items-center">
+                <p className="text-gray-400 text-sm mb-1 text-center">Estimated LCOE</p>
+                <p className="text-2xl font-bold text-teal-400 flex items-center"><DollarSign className="w-5 h-5" />{result.lcoe}/kWh</p>
+              </div>
+              <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 flex flex-col justify-center items-center">
+                <p className="text-gray-400 text-sm mb-1 text-center">Total CAPEX</p>
+                <p className="text-2xl font-bold text-white flex items-center"><DollarSign className="w-5 h-5" />{result.capex_total.toLocaleString()}</p>
+              </div>
+              <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 flex flex-col justify-center items-center">
+                <p className="text-gray-400 text-sm mb-1 text-center">PV Capacity</p>
+                <p className="text-2xl font-bold text-yellow-500">{result.pv_kw} kW</p>
+              </div>
+              <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 flex flex-col justify-center items-center">
+                <p className="text-gray-400 text-sm mb-1 text-center">Battery Storage</p>
+                <p className="text-2xl font-bold text-blue-400 flex items-center gap-1"><Battery className="w-5 h-5"/> {result.batt_kwh} kWh</p>
+              </div>
             </div>
-          </div>
-        </div>
-        
-        <div className="w-full md:w-2/3 h-64 md:h-auto" ref={mapContainerRef}>
-            {!isLeafletReady && (
-                <div className="w-full h-full flex items-center justify-center bg-gray-700">
-                    <Spinner/>
-                    <p className="text-gray-400 ml-4">Loading Map Library...</p>
+
+            {/* Charts */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+              {/* CAPEX Breakdown Pie Chart */}
+              <div className="bg-gray-800 p-6 rounded-xl border border-gray-700">
+                <h3 className="text-lg font-semibold text-gray-200 mb-4">CAPEX Breakdown (USD)</h3>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={costData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
+                        {costData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={(value) => `$${value.toLocaleString()}`} contentStyle={{backgroundColor: '#1f2937', border: 'none', color: '#fff'}} />
+                      <Legend />
+                    </PieChart>
+                  </ResponsiveContainer>
                 </div>
+              </div>
+
+              {/* Energy Mix Bar Chart */}
+              <div className="bg-gray-800 p-6 rounded-xl border border-gray-700">
+                <h3 className="text-lg font-semibold text-gray-200 mb-4">Energy Served (kWh/yr)</h3>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={energyData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
+                      <XAxis dataKey="name" stroke="#9ca3af" />
+                      <YAxis stroke="#9ca3af" />
+                      <Tooltip formatter={(value) => `${value.toLocaleString()} kWh`} contentStyle={{backgroundColor: '#1f2937', border: 'none', color: '#fff'}} cursor={{fill: '#374151'}} />
+                      <Bar dataKey="kWh" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+
+            {/* Warnings */}
+            {result.warnings && result.warnings.length > 0 && (
+              <div className="bg-yellow-900/30 border border-yellow-600 p-4 rounded-xl">
+                <h4 className="text-yellow-500 font-semibold mb-2">Analysis Notes</h4>
+                <ul className="list-disc list-inside text-sm text-yellow-200/80 space-y-1">
+                  {result.warnings.map((w, idx) => (
+                    <li key={idx}>{w}</li>
+                  ))}
+                </ul>
+              </div>
             )}
-        </div>
+
+          </section>
+        )}
       </main>
     </div>
   );
 }
 
 export default App;
-
