@@ -8,7 +8,13 @@
  * Restarting with stat
  * Debugger is active!
  * Debugger PIN: 631-326-424
-127.0.0.1 - - [29/Jul/2026 13:55:06] "[31m[1mPOST /api/plan HTTP/1.1[0m" 400 -
-127.0.0.1 - - [29/Jul/2026 13:55:44] "POST /api/plan HTTP/1.1" 200 -
-127.0.0.1 - - [29/Jul/2026 14:00:46] "OPTIONS /api/plan HTTP/1.1" 200 -
-127.0.0.1 - - [29/Jul/2026 14:00:47] "POST /api/plan HTTP/1.1" 200 -
+127.0.0.1 - - [29/Jul/2026 15:24:54] "POST /api/plan HTTP/1.1" 200 -
+127.0.0.1 - - [29/Jul/2026 15:29:48] "POST /api/plan HTTP/1.1" 200 -
+127.0.0.1 - - [29/Jul/2026 15:36:46] "OPTIONS /api/plan HTTP/1.1" 200 -
+127.0.0.1 - - [29/Jul/2026 15:36:46] "OPTIONS /api/plan HTTP/1.1" 200 -
+127.0.0.1 - - [29/Jul/2026 15:36:47] "POST /api/plan HTTP/1.1" 200 -
+127.0.0.1 - - [29/Jul/2026 15:36:47] "POST /api/plan HTTP/1.1" 200 -
+127.0.0.1 - - [29/Jul/2026 15:46:49] "OPTIONS /api/plan HTTP/1.1" 200 -
+127.0.0.1 - - [29/Jul/2026 15:46:49] "OPTIONS /api/plan HTTP/1.1" 200 -
+127.0.0.1 - - [29/Jul/2026 15:46:51] "POST /api/plan HTTP/1.1" 200 -
+127.0.0.1 - - [29/Jul/2026 15:46:51] "POST /api/plan HTTP/1.1" 200 -
