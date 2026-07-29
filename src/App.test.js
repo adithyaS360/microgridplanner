@@ -1,10 +1,16 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from './App';
 import axios from 'axios';
 
 jest.mock('axios');
+jest.mock('react-leaflet', () => ({
+  MapContainer: ({ children }) => <div data-testid="map-container">{children}</div>,
+  TileLayer: () => <div>TileLayer</div>,
+  Marker: () => <div>Marker</div>,
+  useMapEvents: () => ({}),
+}));
 
-test('renders the form and handles initial analysis load', async () => {
+test('renders the form and handles analysis submission', async () => {
   axios.post.mockResolvedValueOnce({
     data: {
       capex_total: 485600, opex: 14600, payback_period: '20 yr', roi_20yr: -41, irr: 3, co2_avoided_t: 193.4,
@@ -17,9 +23,14 @@ test('renders the form and handles initial analysis load', async () => {
 
   render(<App />);
 
-  // Should show calculating initially
-  const calcButton = screen.getByText(/Calculating.../i);
-  expect(calcButton).toBeInTheDocument();
+  // Should render Map and Run Analysis button
+  expect(screen.getByTestId('map-container')).toBeInTheDocument();
+
+  const runButton = screen.getByRole('button', { name: /Run Analysis/i });
+  expect(runButton).toBeInTheDocument();
+
+  // Click the button
+  fireEvent.click(runButton);
 
   // Then it should eventually render the Energy Analysis Report header
   await waitFor(() => {
