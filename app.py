@@ -174,6 +174,44 @@ def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kw
 
     sys_capacity = pv_kw + wind_kw + biomass_kw
 
+    # 8760 Hourly Simulation for Reliability
+    # Simulate load and generation hour-by-hour over a year (8760 hours)
+    hourly_load = load / 24.0
+    hourly_pv_gen = (pv_kw * e_pv_per_kw_day) / 24.0 # simplified flat profile for now
+    hourly_wind_gen = (wind_kw * wind_cf)
+    hourly_biomass_gen = biomass_kw
+
+    soc = batt_kwh # start fully charged
+    unmet_hours = 0
+
+    for h in range(8760):
+        # Time-of-day solar multiplier (simple bell curve approximation)
+        hour_of_day = h % 24
+        # approximate solar curve: peaks at noon, zero before 6am and after 6pm
+        if 6 <= hour_of_day <= 18:
+            solar_mult = math.sin((hour_of_day - 6) * math.pi / 12)
+        else:
+            solar_mult = 0.0
+
+        current_pv_gen = hourly_pv_gen * solar_mult * (24.0 / (12.0 * 2.0 / math.pi)) # Normalize so daily sum is correct
+
+        total_gen_hour = current_pv_gen + hourly_wind_gen + hourly_biomass_gen
+
+        net_load = hourly_load - total_gen_hour
+
+        if net_load > 0:
+            # discharge battery
+            discharge = min(net_load, soc)
+            soc -= discharge
+            if discharge < net_load:
+                unmet_hours += 1
+        else:
+            # charge battery
+            soc = min(batt_kwh, soc + abs(net_load) * BATTERY_ROUNDTRIP)
+
+    reliability = 100.0 * (8760 - unmet_hours) / 8760.0
+    meets_demand = "Yes" if reliability >= 99.0 else "No"
+
     capex_pv = pv_kw * COST_PV_PER_KW
     capex_wind = wind_kw * COST_WIND_PER_KW
     capex_biomass = biomass_kw * COST_BIOMASS_PER_KW
@@ -241,8 +279,8 @@ def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kw
             "Biomass": rnd(biomass_pct * 100, 1)
         },
         "annual_generation": rnd(annual_load * 1.05, 0),
-        "reliability": 100,
-        "meets_demand": "Yes",
+        "reliability": rnd(reliability, 1),
+        "meets_demand": meets_demand,
 
         "cumulative_cashflow": [rnd(c, 1) for c in cumulative_cashflow]
     }
@@ -261,6 +299,13 @@ def plan():
         solar_fraction = float(data.get("renewables_target", 0.95))
         autonomy = float(data.get("autonomy_days", 1.0))
         load_factor = float(data.get("load_factor", 0.6))
+
+        if load <= 0:
+            return jsonify({"error": "Load must be greater than 0"}), 400
+        if buildings <= 0:
+            return jsonify({"error": "Buildings must be greater than 0"}), 400
+        if area_sqm <= 0:
+            return jsonify({"error": "Area must be greater than 0"}), 400
 
         res = size_system(lat, lon, buildings, area_sqm, load, fuel_cost, solar_fraction, autonomy, load_factor)
         return jsonify(res)
