@@ -5,7 +5,10 @@ import numpy as np
 import os
 import numpy_financial as npf
 from scipy.optimize import linprog
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, make_response
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+import io
 from flask_cors import CORS
 from flask_talisman import Talisman
 from flask_limiter import Limiter
@@ -46,25 +49,26 @@ BATTERY_DOD = 0.90
 BATTERY_ROUNDTRIP = 0.90
 BATTERY_EFFECTIVE = BATTERY_DOD * BATTERY_ROUNDTRIP
 
-# Cost assumptions
-COST_PV_PER_KW = 1200.0
-COST_WIND_PER_KW = 1500.0
-COST_BIOMASS_PER_KW = 2000.0
-COST_BATT_PER_KWH = 400.0
-COST_INV_PER_KW = 200.0
-COST_GEN_PER_KW = 300.0
-
-OM_PV_PER_KW_YR = 20.0
-OM_WIND_PER_KW_YR = 30.0
-OM_BIOMASS_PER_KW_YR = 40.0
-OM_BATT_PER_KWH_YR = 5.0
-OM_GEN_PER_KW_YR = 20.0
+DEFAULT_ASSUMPTIONS = {
+    "cost_pv_per_kw": 1200.0,
+    "cost_wind_per_kw": 1500.0,
+    "cost_biomass_per_kw": 2000.0,
+    "cost_batt_per_kwh": 400.0,
+    "cost_inv_per_kw": 200.0,
+    "cost_gen_per_kw": 300.0,
+    "om_pv_per_kw_yr": 20.0,
+    "om_wind_per_kw_yr": 30.0,
+    "om_biomass_per_kw_yr": 40.0,
+    "om_batt_per_kwh_yr": 5.0,
+    "om_gen_per_kw_yr": 20.0,
+    "wacc": 0.08
+}
 
 FUEL_COST_DEFAULT = 1.20
 GEN_SPEC_CONS_L_PER_KWH = 0.27
 PV_UTILIZATION = 0.90
 
-WACC = 0.08
+wacc_val = 0.08 # Will be overridden by assumptions but keeping for reference if needed elsewhere.
 LIFE_PV_YRS = 20
 LIFE_BATT_YRS = 10
 LIFE_INV_YRS = 10
@@ -123,7 +127,9 @@ def fetch_wind_speed(lat: float, lon: float) -> float:
     return 5.08  # Default from image
 
 def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kwh_day: float,
-                fuel_cost: float, solar_fraction: float, autonomy: float, load_factor: float):
+                fuel_cost: float, solar_fraction: float, autonomy: float, load_factor: float, assumptions: dict = None):
+    if assumptions is None:
+        assumptions = DEFAULT_ASSUMPTIONS
     nasa = fetch_nasa_ghi(round(lat, 2), round(lon, 2))
     ghi_vals = nasa["values"]
     ghi_worst = min(ghi_vals)
@@ -145,9 +151,9 @@ def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kw
     # We want to minimize cost while meeting demand and not exceeding area constraint.
     # Objective function: Minimize total CAPEX + 20yr OPEX
     # Rough cost estimations:
-    cost_pv = COST_PV_PER_KW + OM_PV_PER_KW_YR * 20
-    cost_wind = COST_WIND_PER_KW + OM_WIND_PER_KW_YR * 20
-    cost_biomass = COST_BIOMASS_PER_KW + OM_BIOMASS_PER_KW_YR * 20
+    cost_pv = assumptions.get("cost_pv_per_kw", 1200.0) + assumptions.get("om_pv_per_kw_yr", 20.0) * 20
+    cost_wind = assumptions.get("cost_wind_per_kw", 1500.0) + assumptions.get("om_wind_per_kw_yr", 30.0) * 20
+    cost_biomass = assumptions.get("cost_biomass_per_kw", 2000.0) + assumptions.get("om_biomass_per_kw_yr", 40.0) * 20
 
     c = [cost_pv, cost_wind, cost_biomass]
 
@@ -236,16 +242,19 @@ def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kw
     reliability = 100.0 * (8760 - unmet_hours) / 8760.0
     meets_demand = "Yes" if reliability >= 99.0 else "No"
 
-    capex_pv = pv_kw * COST_PV_PER_KW
-    capex_wind = wind_kw * COST_WIND_PER_KW
-    capex_biomass = biomass_kw * COST_BIOMASS_PER_KW
-    capex_batt = batt_kwh * COST_BATT_PER_KWH
-    capex_inv = inverter_kw * COST_INV_PER_KW
-    capex_gen = gen_nameplate_kw * COST_GEN_PER_KW
+    capex_pv = pv_kw * assumptions.get("cost_pv_per_kw", 1200.0)
+    capex_wind = wind_kw * assumptions.get("cost_wind_per_kw", 1500.0)
+    capex_biomass = biomass_kw * assumptions.get("cost_biomass_per_kw", 2000.0)
+    capex_batt = batt_kwh * assumptions.get("cost_batt_per_kwh", 400.0)
+    capex_inv = inverter_kw * assumptions.get("cost_inv_per_kw", 200.0)
+    capex_gen = gen_nameplate_kw * assumptions.get("cost_gen_per_kw", 300.0)
 
     capex_total = capex_pv + capex_wind + capex_biomass + capex_batt + capex_inv + capex_gen
 
-    annual_om = (pv_kw * OM_PV_PER_KW_YR) + (wind_kw * OM_WIND_PER_KW_YR) + (biomass_kw * OM_BIOMASS_PER_KW_YR) + (batt_kwh * OM_BATT_PER_KWH_YR)
+    annual_om = (pv_kw * assumptions.get("om_pv_per_kw_yr", 20.0)) + \
+                (wind_kw * assumptions.get("om_wind_per_kw_yr", 30.0)) + \
+                (biomass_kw * assumptions.get("om_biomass_per_kw_yr", 40.0)) + \
+                (batt_kwh * assumptions.get("om_batt_per_kwh_yr", 5.0))
     opex = annual_om + 5000 # baseline opex
 
     # Financials
@@ -263,6 +272,7 @@ def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kw
             cf -= (capex_batt + capex_inv) # replacement
         cashflows.append(cf)
 
+    # The variable WACC wasn't used natively before, but typically IRR is compared to WACC.
     irr = npf.irr(cashflows) if savings_per_year > 0 else -1
     cumulative_cashflow = np.cumsum(cashflows).tolist()
 
@@ -309,6 +319,8 @@ def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kw
         "cumulative_cashflow": [rnd(c, 1) for c in cumulative_cashflow]
     }
 
+from typing import Optional
+
 class PlanRequest(BaseModel):
     lat: float = Field(ge=-90, le=90, default=12.3829)
     lon: float = Field(ge=-180, le=180, default=77.3947)
@@ -319,6 +331,36 @@ class PlanRequest(BaseModel):
     renewables_target: float = Field(default=0.95)
     autonomy_days: float = Field(ge=0, default=1.0)
     load_factor: float = Field(gt=0, le=1, default=0.6)
+    assumptions: Optional[dict] = None
+
+from models import AssumptionSet
+
+@app.route("/api/assumptions", methods=["GET", "PUT"])
+@jwt_required()
+def manage_assumptions():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+
+    if not user.org_id:
+        return jsonify({"error": "User has no organization"}), 400
+
+    aset = AssumptionSet.query.filter_by(org_id=user.org_id).first()
+
+    if request.method == "GET":
+        if aset:
+            return jsonify({"id": aset.id, "values": aset.values}), 200
+        else:
+            return jsonify({"values": DEFAULT_ASSUMPTIONS}), 200
+
+    if request.method == "PUT":
+        data = request.json
+        if not aset:
+            aset = AssumptionSet(org_id=user.org_id, name="Default Org Assumptions", values=data.get("values", DEFAULT_ASSUMPTIONS))
+            db.session.add(aset)
+        else:
+            aset.values = data.get("values", DEFAULT_ASSUMPTIONS)
+        db.session.commit()
+        return jsonify({"message": "Assumptions updated", "values": aset.values}), 200
 
 @app.route("/api/auth/register", methods=["POST"])
 def register():
@@ -330,7 +372,14 @@ def register():
         return jsonify({"error": "Email already registered"}), 400
 
     hashed_pwd = bcrypt.hashpw(data["password"].encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-    new_user = User(email=data["email"], password_hash=hashed_pwd)
+
+    # Create a default org for the user if none provided (fixes the "new users have no org" bug)
+    org_name = data.get("org_name", f"{data['email']}'s Org")
+    new_org = Organization(name=org_name)
+    db.session.add(new_org)
+    db.session.flush() # flush to get new_org.id
+
+    new_user = User(email=data["email"], password_hash=hashed_pwd, org_id=new_org.id)
     db.session.add(new_user)
     db.session.commit()
     return jsonify({"message": "User created successfully"}), 201
@@ -358,7 +407,7 @@ def plan():
     try:
         req = PlanRequest(**data)
         res = size_system(req.lat, req.lon, req.buildings, req.area_sqm, req.load,
-                          req.fuel_cost, req.renewables_target, req.autonomy_days, req.load_factor)
+                          req.fuel_cost, req.renewables_target, req.autonomy_days, req.load_factor, req.assumptions)
         return jsonify(res)
     except ValidationError as e:
         return jsonify({"error": "Validation error: " + str(e)}), 400
@@ -411,7 +460,7 @@ def save_analysis(project_id):
         # Run analysis
         req = PlanRequest(**data)
         res = size_system(req.lat, req.lon, req.buildings, req.area_sqm, req.load,
-                          req.fuel_cost, req.renewables_target, req.autonomy_days, req.load_factor)
+                          req.fuel_cost, req.renewables_target, req.autonomy_days, req.load_factor, req.assumptions)
 
         # Save to DB
         analysis = Analysis(project_id=proj.id, inputs=data, results=res)
@@ -434,6 +483,47 @@ def get_analysis(analysis_id):
         return jsonify({"error": "Forbidden"}), 403
 
     return jsonify({"id": a.id, "inputs": a.inputs, "results": a.results}), 200
+
+@app.route("/api/analyses/<int:analysis_id>/report.pdf", methods=["GET"])
+@jwt_required()
+def export_analysis_pdf(analysis_id):
+    a = Analysis.query.get_or_404(analysis_id)
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+
+    if a.project.org_id != user.org_id:
+        return jsonify({"error": "Forbidden"}), 403
+
+    buffer = io.BytesIO()
+    p = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+
+    p.setFont("Helvetica-Bold", 16)
+    p.drawString(50, height - 50, f"Microgrid Feasibility Report: {a.project.name}")
+
+    p.setFont("Helvetica", 12)
+    p.drawString(50, height - 90, f"Location: {a.project.lat}, {a.project.lon}")
+    p.drawString(50, height - 110, f"System Capacity: {a.results.get('system_capacity')} kW")
+    p.drawString(50, height - 130, f"Reliability: {a.results.get('reliability')}%")
+    p.drawString(50, height - 150, f"20-Year ROI: {a.results.get('roi_20yr')}%")
+    p.drawString(50, height - 170, f"Payback Period: {a.results.get('payback_period')}")
+    p.drawString(50, height - 190, f"Total CAPEX: ${a.results.get('capex_total'):,.2f}")
+
+    p.drawString(50, height - 230, "Energy Mix:")
+    mix = a.results.get('energy_mix', {})
+    y = height - 250
+    for k, v in mix.items():
+        p.drawString(70, y, f"- {k}: {v}%")
+        y -= 20
+
+    p.showPage()
+    p.save()
+    buffer.seek(0)
+
+    response = make_response(buffer.getvalue())
+    response.headers['Content-Type'] = 'application/pdf'
+    response.headers['Content-Disposition'] = f'attachment; filename=report_{analysis_id}.pdf'
+    return response
 
 if __name__ == "__main__":
     # Drive debug mode from an environment variable (FLASK_DEBUG), off by default.
