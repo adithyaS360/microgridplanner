@@ -330,7 +330,14 @@ def register():
         return jsonify({"error": "Email already registered"}), 400
 
     hashed_pwd = bcrypt.hashpw(data["password"].encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-    new_user = User(email=data["email"], password_hash=hashed_pwd)
+
+    # Create a default org for the user if none provided (fixes the "new users have no org" bug)
+    org_name = data.get("org_name", f"{data['email']}'s Org")
+    new_org = Organization(name=org_name)
+    db.session.add(new_org)
+    db.session.flush() # flush to get new_org.id
+
+    new_user = User(email=data["email"], password_hash=hashed_pwd, org_id=new_org.id)
     db.session.add(new_user)
     db.session.commit()
     return jsonify({"message": "User created successfully"}), 201
