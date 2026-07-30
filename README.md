@@ -15,15 +15,9 @@ You need to run both the backend (Flask) and the frontend (React) servers simult
 
 ### 1. Run the Backend (Flask API)
 
-Open a terminal in the root directory of this repository and run the following commands to install dependencies:
+Open a terminal in the root directory of this repository and run the following commands:
 
 `pip install -r requirements.txt`
-
-Because we have added a database and authentication layer, you must initialize the database before running the app for the first time:
-
-`flask db upgrade`
-
-You can also set optional environment variables (e.g., `FLASK_DEBUG=True`, `JWT_SECRET_KEY='your-secret'`). Finally, start the server:
 
 `python app.py`
 

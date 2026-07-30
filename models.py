@@ -10,6 +10,13 @@ class Organization(db.Model):
 
     users = db.relationship('User', backref='organization', lazy=True)
     projects = db.relationship('Project', backref='organization', lazy=True)
+    assumption_sets = db.relationship('AssumptionSet', backref='organization', lazy=True)
+
+class AssumptionSet(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    org_id = db.Column(db.Integer, db.ForeignKey('organization.id'), nullable=True)  # null = global default
+    name = db.Column(db.String(100))
+    values = db.Column(db.JSON)  # {"cost_pv_per_kw": 1200, "wacc": 0.08, ...}
 
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
