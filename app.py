@@ -3,6 +3,7 @@ import statistics
 import requests
 import numpy as np
 import numpy_financial as npf
+from scipy.optimize import linprog
 from sklearn.linear_model import LinearRegression
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -117,37 +118,60 @@ def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kw
     # Average them or use the predicted if not provided
     load = max(load_kwh_day, predicted_load)
 
-    # Simplified energy mix
-    solar_pct = 0.95
-    wind_pct = 0.037
-    biomass_pct = 0.013
-
-    # PV sizing with Area Constraint
     e_pv_per_kw_day = (ghi_median if ghi_median > 0 else 5.42) * PR
-    desired_pv_kw = (load * solar_pct) / e_pv_per_kw_day
+    wind_cf = min(0.4, max(0.1, (wind_speed - 3) / 10))
 
-    # Assume 1 kW of PV requires about 5 sq meters of space
+    # Define generation per kW per day
+    gen_pv = e_pv_per_kw_day
+    gen_wind = wind_cf * 24
+    gen_biomass = 24  # Biomass can run 24/7 if needed
+
+    # Optimization Engine using linprog
+    # We want to minimize cost while meeting demand and not exceeding area constraint.
+    # Objective function: Minimize total CAPEX + 20yr OPEX
+    # Rough cost estimations:
+    cost_pv = COST_PV_PER_KW + OM_PV_PER_KW_YR * 20
+    cost_wind = COST_WIND_PER_KW + OM_WIND_PER_KW_YR * 20
+    cost_biomass = COST_BIOMASS_PER_KW + OM_BIOMASS_PER_KW_YR * 20
+
+    c = [cost_pv, cost_wind, cost_biomass]
+
+    # Constraint 1: Energy Demand must be met
+    # gen_pv * pv_kw + gen_wind * wind_kw + gen_biomass * biomass_kw >= load
+    # linprog uses A_ub * x <= b_ub, so we multiply by -1
+    A_ub = [[-gen_pv, -gen_wind, -gen_biomass]]
+    b_ub = [-load]
+
+    # Bounds
+    # Area constraint: 1 kW of PV requires about 5 sq meters
     max_pv_by_area = area_sqm / 5.0
 
-    pv_kw = min(desired_pv_kw, max_pv_by_area)
+    x0_bounds = (0, max_pv_by_area) # PV capacity bounds
+    x1_bounds = (0, None)           # Wind capacity bounds
+    x2_bounds = (0, None)           # Biomass capacity bounds
 
-    # If PV was constrained by area, the solar percentage served drops,
-    # meaning the rest must be picked up by wind/biomass or the generator.
-    if pv_kw < desired_pv_kw:
-        solar_pct = (pv_kw * e_pv_per_kw_day) / load
-        # Shift the missing percentage to wind/biomass if possible (simplified fallback)
-        shortfall = 0.95 - solar_pct
-        wind_pct += shortfall * 0.7
-        biomass_pct += shortfall * 0.3
+    res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=[x0_bounds, x1_bounds, x2_bounds], method='highs')
 
+    if res.success:
+        pv_kw = res.x[0]
+        wind_kw = res.x[1]
+        biomass_kw = res.x[2]
+    else:
+        # Fallback to simple sizing if optimization fails
+        pv_kw = min(load / gen_pv, max_pv_by_area)
+        wind_kw = 0
+        biomass_kw = (load - pv_kw * gen_pv) / gen_biomass
 
-    # Wind sizing
-    # very rough wind capacity factor estimation
-    wind_cf = min(0.4, max(0.1, (wind_speed - 3) / 10))
-    wind_kw = (load * wind_pct) / (wind_cf * 24)
-
-    # Biomass sizing
-    biomass_kw = (load * biomass_pct) / 24
+    # Calculate actual energy mix percentages
+    total_gen = (pv_kw * gen_pv) + (wind_kw * gen_wind) + (biomass_kw * gen_biomass)
+    if total_gen > 0:
+        solar_pct = (pv_kw * gen_pv) / total_gen
+        wind_pct = (wind_kw * gen_wind) / total_gen
+        biomass_pct = (biomass_kw * gen_biomass) / total_gen
+    else:
+        solar_pct = 0.95
+        wind_pct = 0.037
+        biomass_pct = 0.013
 
     # Battery
     batt_kwh = (load * autonomy) / BATTERY_EFFECTIVE
