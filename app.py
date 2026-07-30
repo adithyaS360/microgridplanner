@@ -2,14 +2,16 @@ import math
 import statistics
 import requests
 import numpy as np
+import os
 import numpy_financial as npf
 from scipy.optimize import linprog
-from sklearn.linear_model import LinearRegression
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)
+# Restrict CORS to a specific domain or use a default
+allowed_origin = os.environ.get("ALLOWED_ORIGIN", "https://yourdomain.com")
+CORS(app, origins=[allowed_origin, "http://localhost:3000"])
 
 # ----------------------------
 # Configurable defaults
@@ -96,15 +98,6 @@ def fetch_wind_speed(lat: float, lon: float) -> float:
         print("Open-Meteo error:", e)
     return 5.08  # Default from image
 
-def predict_demand(buildings: int, area_sqm: float, lat: float) -> float:
-    # Dummy ML model for demand prediction
-    X_train = np.array([[10, 1000, 10], [20, 2000, 20], [5, 500, 5], [15, 1500, 15]])
-    y_train = np.array([50, 100, 25, 75])
-    model = LinearRegression()
-    model.fit(X_train, y_train)
-    X_test = np.array([[buildings, area_sqm, lat]])
-    return max(10, float(model.predict(X_test)[0]))
-
 def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kwh_day: float,
                 fuel_cost: float, solar_fraction: float, autonomy: float, load_factor: float):
     nasa = fetch_nasa_ghi(lat, lon)
@@ -113,10 +106,8 @@ def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kw
     ghi_median = statistics.median(ghi_vals)
     wind_speed = fetch_wind_speed(lat, lon)
 
-    # Use ML model to adjust demand if load_kwh_day is small or just as an example
-    predicted_load = predict_demand(buildings, area_sqm, lat)
-    # Average them or use the predicted if not provided
-    load = max(load_kwh_day, predicted_load)
+    # Use user input load directly
+    load = load_kwh_day
 
     e_pv_per_kw_day = (ghi_median if ghi_median > 0 else 5.42) * PR
     wind_cf = min(0.4, max(0.1, (wind_speed - 3) / 10))
@@ -182,6 +173,44 @@ def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kw
     gen_nameplate_kw = round_up_to_step(gen_kw, 5.0)
 
     sys_capacity = pv_kw + wind_kw + biomass_kw
+
+    # 8760 Hourly Simulation for Reliability
+    # Simulate load and generation hour-by-hour over a year (8760 hours)
+    hourly_load = load / 24.0
+    hourly_pv_gen = (pv_kw * e_pv_per_kw_day) / 24.0 # simplified flat profile for now
+    hourly_wind_gen = (wind_kw * wind_cf)
+    hourly_biomass_gen = biomass_kw
+
+    soc = batt_kwh # start fully charged
+    unmet_hours = 0
+
+    for h in range(8760):
+        # Time-of-day solar multiplier (simple bell curve approximation)
+        hour_of_day = h % 24
+        # approximate solar curve: peaks at noon, zero before 6am and after 6pm
+        if 6 <= hour_of_day <= 18:
+            solar_mult = math.sin((hour_of_day - 6) * math.pi / 12)
+        else:
+            solar_mult = 0.0
+
+        current_pv_gen = hourly_pv_gen * solar_mult * (24.0 / (12.0 * 2.0 / math.pi)) # Normalize so daily sum is correct
+
+        total_gen_hour = current_pv_gen + hourly_wind_gen + hourly_biomass_gen
+
+        net_load = hourly_load - total_gen_hour
+
+        if net_load > 0:
+            # discharge battery
+            discharge = min(net_load, soc)
+            soc -= discharge
+            if discharge < net_load:
+                unmet_hours += 1
+        else:
+            # charge battery
+            soc = min(batt_kwh, soc + abs(net_load) * BATTERY_ROUNDTRIP)
+
+    reliability = 100.0 * (8760 - unmet_hours) / 8760.0
+    meets_demand = "Yes" if reliability >= 99.0 else "No"
 
     capex_pv = pv_kw * COST_PV_PER_KW
     capex_wind = wind_kw * COST_WIND_PER_KW
@@ -250,8 +279,8 @@ def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kw
             "Biomass": rnd(biomass_pct * 100, 1)
         },
         "annual_generation": rnd(annual_load * 1.05, 0),
-        "reliability": 100,
-        "meets_demand": "Yes",
+        "reliability": rnd(reliability, 1),
+        "meets_demand": meets_demand,
 
         "cumulative_cashflow": [rnd(c, 1) for c in cumulative_cashflow]
     }
@@ -271,10 +300,19 @@ def plan():
         autonomy = float(data.get("autonomy_days", 1.0))
         load_factor = float(data.get("load_factor", 0.6))
 
+        if load <= 0:
+            return jsonify({"error": "Load must be greater than 0"}), 400
+        if buildings <= 0:
+            return jsonify({"error": "Buildings must be greater than 0"}), 400
+        if area_sqm <= 0:
+            return jsonify({"error": "Area must be greater than 0"}), 400
+
         res = size_system(lat, lon, buildings, area_sqm, load, fuel_cost, solar_fraction, autonomy, load_factor)
         return jsonify(res)
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # Drive debug mode from an environment variable (FLASK_DEBUG), off by default.
+    is_debug = os.environ.get("FLASK_DEBUG", "False").lower() in ["true", "1", "t"]
+    app.run(host="0.0.0.0", port=5000, debug=is_debug)

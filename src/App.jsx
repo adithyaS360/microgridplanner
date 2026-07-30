@@ -65,7 +65,8 @@ function App() {
     setLoading(true);
     setError('');
     try {
-      const res = await axios.post('http://127.0.0.1:5000/api/plan', formData);
+      const API_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:5000';
+      const res = await axios.post(`${API_URL}/api/plan`, formData);
       setResult(res.data);
     } catch (err) {
       setError(err.response?.data?.error || err.message);
@@ -130,16 +131,16 @@ function App() {
 
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 flex items-center gap-1"><Maximize className="w-3 h-3"/> Available Area (sq m)</label>
-                <input type="number" step="any" name="area_sqm" value={formData.area_sqm} onChange={handleChange} className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-slate-800 text-sm focus:outline-none focus:border-blue-500" required />
+                <input type="number" step="any" min="1" name="area_sqm" value={formData.area_sqm} onChange={handleChange} className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-slate-800 text-sm focus:outline-none focus:border-blue-500" required />
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Daily Load (kWh)</label>
-                <input type="number" step="any" name="load" value={formData.load} onChange={handleChange} className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-slate-800 text-sm focus:outline-none focus:border-blue-500" required />
+                <input type="number" step="any" min="1" name="load" value={formData.load} onChange={handleChange} className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-slate-800 text-sm focus:outline-none focus:border-blue-500" required />
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Buildings</label>
-                <input type="number" name="buildings" value={formData.buildings} onChange={handleChange} className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-slate-800 text-sm focus:outline-none focus:border-blue-500" required />
+                <input type="number" min="1" name="buildings" value={formData.buildings} onChange={handleChange} className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-slate-800 text-sm focus:outline-none focus:border-blue-500" required />
               </div>
 
               <button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded text-sm transition duration-200 flex justify-center items-center gap-2">
