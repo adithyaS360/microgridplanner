@@ -2,14 +2,16 @@ import math
 import statistics
 import requests
 import numpy as np
+import os
 import numpy_financial as npf
 from scipy.optimize import linprog
-from sklearn.linear_model import LinearRegression
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)
+# Restrict CORS to a specific domain or use a default
+allowed_origin = os.environ.get("ALLOWED_ORIGIN", "https://yourdomain.com")
+CORS(app, origins=[allowed_origin, "http://localhost:3000"])
 
 # ----------------------------
 # Configurable defaults
@@ -96,15 +98,6 @@ def fetch_wind_speed(lat: float, lon: float) -> float:
         print("Open-Meteo error:", e)
     return 5.08  # Default from image
 
-def predict_demand(buildings: int, area_sqm: float, lat: float) -> float:
-    # Dummy ML model for demand prediction
-    X_train = np.array([[10, 1000, 10], [20, 2000, 20], [5, 500, 5], [15, 1500, 15]])
-    y_train = np.array([50, 100, 25, 75])
-    model = LinearRegression()
-    model.fit(X_train, y_train)
-    X_test = np.array([[buildings, area_sqm, lat]])
-    return max(10, float(model.predict(X_test)[0]))
-
 def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kwh_day: float,
                 fuel_cost: float, solar_fraction: float, autonomy: float, load_factor: float):
     nasa = fetch_nasa_ghi(lat, lon)
@@ -113,10 +106,8 @@ def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kw
     ghi_median = statistics.median(ghi_vals)
     wind_speed = fetch_wind_speed(lat, lon)
 
-    # Use ML model to adjust demand if load_kwh_day is small or just as an example
-    predicted_load = predict_demand(buildings, area_sqm, lat)
-    # Average them or use the predicted if not provided
-    load = max(load_kwh_day, predicted_load)
+    # Use user input load directly
+    load = load_kwh_day
 
     e_pv_per_kw_day = (ghi_median if ghi_median > 0 else 5.42) * PR
     wind_cf = min(0.4, max(0.1, (wind_speed - 3) / 10))
@@ -277,4 +268,6 @@ def plan():
         return jsonify({"error": str(e)}), 400
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # Drive debug mode from an environment variable (FLASK_DEBUG), off by default.
+    is_debug = os.environ.get("FLASK_DEBUG", "False").lower() in ["true", "1", "t"]
+    app.run(host="0.0.0.0", port=5000, debug=is_debug)

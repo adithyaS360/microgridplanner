@@ -65,7 +65,8 @@ function App() {
     setLoading(true);
     setError('');
     try {
-      const res = await axios.post('http://127.0.0.1:5000/api/plan', formData);
+      const API_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:5000';
+      const res = await axios.post(`${API_URL}/api/plan`, formData);
       setResult(res.data);
     } catch (err) {
       setError(err.response?.data?.error || err.message);
