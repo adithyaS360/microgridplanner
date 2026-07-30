@@ -7,8 +7,19 @@ import numpy_financial as npf
 from scipy.optimize import linprog
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from flask_talisman import Talisman
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from flask_caching import Cache
+from pydantic import BaseModel, Field, ValidationError
 
 app = Flask(__name__)
+# Rate limiting and Caching with simple in-memory storage for sandbox
+limiter = Limiter(get_remote_address, app=app, default_limits=["200 per day", "50 per hour"], storage_uri="memory://")
+cache = Cache(app, config={"CACHE_TYPE": "SimpleCache"})
+
+# Security headers
+Talisman(app, force_https=False) # Disable force HTTPS for local dev/sandbox
 # Restrict CORS to a specific domain or use a default
 allowed_origin = os.environ.get("ALLOWED_ORIGIN", "https://yourdomain.com")
 CORS(app, origins=[allowed_origin, "http://localhost:3000"])
@@ -66,6 +77,7 @@ def crf(rate: float, n_years: int) -> float:
 def round_up_to_step(x: float, step: float) -> float:
     return math.ceil(x / step) * step
 
+@cache.memoize(timeout=86400)
 def fetch_nasa_ghi(lat: float, lon: float) -> dict:
     url = NASA_POWER_URL.format(lat=lat, lon=lon)
     try:
@@ -83,6 +95,7 @@ def fetch_nasa_ghi(lat: float, lon: float) -> dict:
     # Default fallback
     return {"values": [5.0]*12}
 
+@cache.memoize(timeout=86400)
 def fetch_wind_speed(lat: float, lon: float) -> float:
     url = OPEN_METEO_URL.format(lat=lat, lon=lon)
     try:
@@ -100,11 +113,11 @@ def fetch_wind_speed(lat: float, lon: float) -> float:
 
 def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kwh_day: float,
                 fuel_cost: float, solar_fraction: float, autonomy: float, load_factor: float):
-    nasa = fetch_nasa_ghi(lat, lon)
+    nasa = fetch_nasa_ghi(round(lat, 2), round(lon, 2))
     ghi_vals = nasa["values"]
     ghi_worst = min(ghi_vals)
     ghi_median = statistics.median(ghi_vals)
-    wind_speed = fetch_wind_speed(lat, lon)
+    wind_speed = fetch_wind_speed(round(lat, 2), round(lon, 2))
 
     # Use user input load directly
     load = load_kwh_day
@@ -285,32 +298,32 @@ def size_system(lat: float, lon: float, buildings: int, area_sqm: float, load_kw
         "cumulative_cashflow": [rnd(c, 1) for c in cumulative_cashflow]
     }
 
+class PlanRequest(BaseModel):
+    lat: float = Field(ge=-90, le=90, default=12.3829)
+    lon: float = Field(ge=-180, le=180, default=77.3947)
+    load: float = Field(gt=0, default=1000)
+    buildings: int = Field(gt=0, default=15)
+    area_sqm: float = Field(gt=0, default=5000)
+    fuel_cost: float = Field(gt=0, default=FUEL_COST_DEFAULT)
+    renewables_target: float = Field(default=0.95)
+    autonomy_days: float = Field(ge=0, default=1.0)
+    load_factor: float = Field(gt=0, le=1, default=0.6)
+
 @app.route("/api/plan", methods=["POST"])
+@limiter.limit("10 per minute")
 def plan():
     data = request.get_json() or {}
 
     try:
-        lat = float(data.get("lat", 12.3829))
-        lon = float(data.get("lon", 77.3947))
-        load = float(data.get("load", 1000))
-        buildings = int(data.get("buildings", 15))
-        area_sqm = float(data.get("area_sqm", 5000))
-        fuel_cost = float(data.get("fuel_cost", FUEL_COST_DEFAULT))
-        solar_fraction = float(data.get("renewables_target", 0.95))
-        autonomy = float(data.get("autonomy_days", 1.0))
-        load_factor = float(data.get("load_factor", 0.6))
-
-        if load <= 0:
-            return jsonify({"error": "Load must be greater than 0"}), 400
-        if buildings <= 0:
-            return jsonify({"error": "Buildings must be greater than 0"}), 400
-        if area_sqm <= 0:
-            return jsonify({"error": "Area must be greater than 0"}), 400
-
-        res = size_system(lat, lon, buildings, area_sqm, load, fuel_cost, solar_fraction, autonomy, load_factor)
+        req = PlanRequest(**data)
+        res = size_system(req.lat, req.lon, req.buildings, req.area_sqm, req.load,
+                          req.fuel_cost, req.renewables_target, req.autonomy_days, req.load_factor)
         return jsonify(res)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+    except ValidationError as e:
+        return jsonify({"error": "Validation error: " + str(e)}), 400
+    except Exception:
+        app.logger.exception("plan() failed")
+        return jsonify({"error": "Invalid input or internal error"}), 400
 
 if __name__ == "__main__":
     # Drive debug mode from an environment variable (FLASK_DEBUG), off by default.
