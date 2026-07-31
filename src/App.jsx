@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import {
-  ArrowLeft, Calendar, TrendingUp, Leaf, Building2, Zap, Battery, Sun, Wind, DollarSign, MapPin, Maximize
+  ArrowLeft, Calendar, TrendingUp, Leaf, Building2, Zap, Battery, Sun, Wind, DollarSign, MapPin, Maximize, FileText, Save, LogIn
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, ResponsiveContainer,
@@ -35,29 +35,45 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
+  const [auth, setAuth] = useState({ email: '', password: '', token: localStorage.getItem('microgrid_token') || '' });
+  const [projectId, setProjectId] = useState(localStorage.getItem('microgrid_project_id') || '');
+  const [analysisId, setAnalysisId] = useState(null);
+  const [portfolio, setPortfolio] = useState([]);
+  const [sensitivity, setSensitivity] = useState(null);
 
   const [formData, setFormData] = useState({
     lat: 12.3829,
     lon: 77.3947,
     load: 1000,
     buildings: 15,
-    area_sqm: 5000
+    area_sqm: 5000,
+    fuel_cost: 1.2,
+    renewables_target: 0.95,
+    autonomy_days: 1,
+    load_factor: 0.6,
+    weather_case: 'P50'
   });
 
 
   const handleMapClick = (latlng) => {
-    setFormData({
-      ...formData,
+    setFormData((current) => ({
+      ...current,
       lat: parseFloat(latlng.lat.toFixed(4)),
       lon: parseFloat(latlng.lng.toFixed(4))
-    });
+    }));
   };
 
   const handleChange = (e) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: parseFloat(e.target.value) || e.target.value
-    });
+    const { name, value } = e.target;
+    setFormData((current) => ({
+      ...current,
+      [name]: value === '' ? '' : Number(value)
+    }));
+  };
+
+  const handleNewAnalysis = () => {
+    setResult(null);
+    setError('');
   };
 
   const handleRunAnalysis = async (e) => {
@@ -66,13 +82,65 @@ function App() {
     setError('');
     try {
       const API_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:5000';
-      const res = await axios.post(`${API_URL}/api/plan`, formData);
-      setResult(res.data);
+      const config = auth.token ? { headers: { Authorization: `Bearer ${auth.token}` } } : {};
+      const url = projectId ? `${API_URL}/api/projects/${projectId}/analyze` : `${API_URL}/api/plan`;
+      const res = await axios.post(url, formData, config);
+      setResult(res.data.results || res.data);
+      setAnalysisId(res.data.analysis_id || null);
     } catch (err) {
       setError(err.response?.data?.error || err.message);
     } finally {
       setLoading(false);
     }
+  };
+
+  const authenticate = async (register = false) => {
+    setError('');
+    try {
+      const API_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:5000';
+      if (register) await axios.post(`${API_URL}/api/auth/register`, { email: auth.email, password: auth.password });
+      const response = await axios.post(`${API_URL}/api/auth/login`, { email: auth.email, password: auth.password });
+      localStorage.setItem('microgrid_token', response.data.access_token);
+      setAuth((current) => ({ ...current, token: response.data.access_token }));
+    } catch (err) { setError(err.response?.data?.error || err.message); }
+  };
+
+  const createProject = async () => {
+    if (!auth.token) return setError('Sign in before saving a project.');
+    try {
+      const API_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:5000';
+      const response = await axios.post(`${API_URL}/api/projects`, { name: `Analysis ${new Date().toLocaleDateString()}`, lat: formData.lat, lon: formData.lon }, { headers: { Authorization: `Bearer ${auth.token}` } });
+      localStorage.setItem('microgrid_project_id', response.data.id);
+      setProjectId(String(response.data.id));
+      setError('');
+    } catch (err) { setError(err.response?.data?.error || err.message); }
+  };
+
+  const loadPortfolio = async () => {
+    if (!auth.token) return;
+    try {
+      const API_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:5000';
+      const response = await axios.get(`${API_URL}/api/portfolio`, { headers: { Authorization: `Bearer ${auth.token}` } });
+      setPortfolio(response.data);
+    } catch (err) { setError(err.response?.data?.error || err.message); }
+  };
+
+  const runSensitivity = async () => {
+    if (!auth.token || !projectId) return setError('Save this analysis to a project before running sensitivity.');
+    try {
+      const API_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:5000';
+      const response = await axios.post(`${API_URL}/api/projects/${projectId}/sensitivity`, { ...formData, variable: 'fuel_cost', values: [0.8, 1.0, 1.2, 1.5] }, { headers: { Authorization: `Bearer ${auth.token}` } });
+      setSensitivity(response.data.scenarios);
+    } catch (err) { setError(err.response?.data?.error || err.message); }
+  };
+
+  const downloadReport = async () => {
+    if (!auth.token || !projectId || !analysisId) return setError('Save and run an analysis before exporting its PDF report.');
+    try {
+      const API_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:5000';
+      const response = await axios.get(`${API_URL}/api/projects/${projectId}/report/${analysisId}.pdf`, { headers: { Authorization: `Bearer ${auth.token}` }, responseType: 'blob' });
+      const url = URL.createObjectURL(response.data); const link = document.createElement('a'); link.href = url; link.download = 'microgrid-feasibility-report.pdf'; link.click(); URL.revokeObjectURL(url);
+    } catch (err) { setError(err.response?.data?.error || err.message); }
   };
 
   // Removed auto-run on mount to require manual trigger
@@ -89,7 +157,7 @@ function App() {
     <div className="min-h-screen bg-[#f8fafc] text-slate-800 font-sans flex flex-col">
       <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <button className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition">
+          <button type="button" onClick={handleNewAnalysis} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition">
             <ArrowLeft className="w-4 h-4" />
             <span className="text-sm font-medium">New Analysis</span>
           </button>
@@ -140,13 +208,26 @@ function App() {
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Buildings</label>
-                <input type="number" min="1" name="buildings" value={formData.buildings} onChange={handleChange} className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-slate-800 text-sm focus:outline-none focus:border-blue-500" required />
+                <input type="number" min="1" step="1" name="buildings" value={formData.buildings} onChange={handleChange} className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-slate-800 text-sm focus:outline-none focus:border-blue-500" required />
               </div>
+              <details className="rounded border border-slate-200 p-3">
+                <summary className="cursor-pointer text-xs font-bold text-slate-600">Planning assumptions</summary>
+                <div className="mt-3 space-y-3">
+                  <label className="block text-xs text-slate-500">Fuel cost ($/L)<input type="number" step="0.01" min="0" name="fuel_cost" value={formData.fuel_cost} onChange={handleChange} className="mt-1 w-full bg-slate-50 border border-slate-200 rounded p-2" /></label>
+                  <label className="block text-xs text-slate-500">Renewable target<input type="number" step="0.05" min="0" max="1" name="renewables_target" value={formData.renewables_target} onChange={handleChange} className="mt-1 w-full bg-slate-50 border border-slate-200 rounded p-2" /></label>
+                  <label className="block text-xs text-slate-500">Battery autonomy (days)<input type="number" step="0.25" min="0" max="7" name="autonomy_days" value={formData.autonomy_days} onChange={handleChange} className="mt-1 w-full bg-slate-50 border border-slate-200 rounded p-2" /></label>
+                  <label className="block text-xs text-slate-500">Weather case<select name="weather_case" value={formData.weather_case} onChange={(event) => setFormData((current) => ({ ...current, weather_case: event.target.value }))} className="mt-1 w-full bg-slate-50 border border-slate-200 rounded p-2"><option value="P50">P50 (median)</option><option value="P90">P90 (conservative)</option></select></label>
+                </div>
+              </details>
 
               <button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded text-sm transition duration-200 flex justify-center items-center gap-2">
                 {loading ? 'Calculating...' : 'Run Analysis'}
               </button>
             </form>
+            <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-3">
+              <h2 className="text-base font-bold text-slate-800">Project workspace</h2>
+              {!auth.token ? <><input type="email" placeholder="Email" value={auth.email} onChange={(event) => setAuth((current) => ({ ...current, email: event.target.value }))} className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-sm" /><input type="password" placeholder="Password (8+ characters)" value={auth.password} onChange={(event) => setAuth((current) => ({ ...current, password: event.target.value }))} className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-sm" /><div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => authenticate(false)} className="text-sm bg-slate-700 text-white rounded p-2"><LogIn className="w-4 h-4 inline mr-1" />Sign in</button><button type="button" onClick={() => authenticate(true)} className="text-sm border border-slate-300 rounded p-2">Create account</button></div></> : <><p className="text-xs text-emerald-700">Signed in. {projectId ? `Project #${projectId} selected.` : 'Create a project to persist analyses.'}</p><div className="grid grid-cols-2 gap-2"><button type="button" onClick={createProject} className="text-sm bg-blue-600 text-white rounded p-2"><Save className="w-4 h-4 inline mr-1" />Save project</button><button type="button" onClick={loadPortfolio} className="text-sm border border-slate-300 rounded p-2">Portfolio</button></div>{portfolio.length > 0 && <select value={projectId} onChange={(event) => { setProjectId(event.target.value); localStorage.setItem('microgrid_project_id', event.target.value); }} className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-sm"><option value="">Choose saved project</option>{portfolio.map((item) => <option key={item.project.id} value={item.project.id}>{item.project.name}</option>)}</select>}</>}
+            </div>
             {error && <div className="p-4 text-red-600 bg-red-50 border border-red-200 rounded-xl text-sm">{error}</div>}
         </div>
 
@@ -160,6 +241,11 @@ function App() {
 
           {result && (
             <>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={runSensitivity} className="text-sm bg-slate-700 text-white rounded px-3 py-2">Run fuel sensitivity</button>
+                <button type="button" onClick={downloadReport} className="text-sm bg-blue-600 text-white rounded px-3 py-2"><FileText className="w-4 h-4 inline mr-1" />Export PDF</button>
+                <span className="text-xs text-slate-500 self-center">Save a project first to unlock persistent analysis, sensitivity, CSV ingestion, BOM matching, and PDF export.</span>
+              </div>
               {/* Top 4 KPI Cards */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="bg-orange-50/50 border border-orange-200 rounded-xl p-5 flex flex-col justify-between relative shadow-sm">
@@ -328,6 +414,7 @@ function App() {
                 </div>
 
               </div>
+              {sensitivity && <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm"><h2 className="font-bold text-slate-800 mb-3">Fuel-cost sensitivity</h2><div className="grid grid-cols-2 md:grid-cols-4 gap-3">{sensitivity.map((scenario) => <div key={scenario.value} className="border border-slate-100 rounded p-3 text-sm"><div className="text-slate-500">${scenario.value}/L</div><div className="font-semibold">IRR {scenario.irr}%</div><div>{formatMoney(scenario.capex_total)}</div></div>)}</div><p className="text-xs text-slate-500 mt-3">For large Monte Carlo runs, vectorize the hourly loop with NumPy or compile it with Numba.</p></div>}
             </>
           )}
         </div>
